@@ -8,6 +8,7 @@ import (
 	"os"
 
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -49,7 +50,7 @@ func (*dummyServer) ServeHTTP(responseWriter http.ResponseWriter, request *http.
 	deserializer := codecs.UniversalDeserializer()
 	_, _, err = deserializer.Decode(body, nil, &requestedAdmissionReview)
 	if err != nil {
-		fmt.Println("error when deserializing: ", err)
+		fmt.Println("error when deserializing request: ", err)
 		return
 	}
 
@@ -62,6 +63,17 @@ func (*dummyServer) ServeHTTP(responseWriter http.ResponseWriter, request *http.
 
 	if requestedAdmissionReview.Request != nil {
 		responseAdmissionReview.Response.UID = requestedAdmissionReview.Request.UID
+
+		if requestedAdmissionReview.Request.Kind.Kind != "Pod" {
+			fmt.Println("not a pod")
+			return
+		}
+		pod := corev1.Pod{}
+		if _, _, err = deserializer.Decode(requestedAdmissionReview.Request.Object.Raw, nil, &pod); err != nil {
+			fmt.Println("error when deserializing pod: ", err)
+			return
+		}
+		responseAdmissionReview.Response.Allowed = pod.Namespace == "kube-system"
 	}
 
 	respBytes, err := json.Marshal(responseAdmissionReview)

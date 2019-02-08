@@ -69,27 +69,27 @@ spec:
 ---
 
 ## TODO wkpo next mutating?
-apiVersion: admissionregistration.k8s.io/v1beta1
-kind: ValidatingWebhookConfiguration
-metadata:
-  name: ${DEPLOYMENT_NAME}
-webhooks:
-- name: k8s-gmsa-admission-webhook.wk8.github.com
-  clientConfig:
-    service:
-      name: ${DEPLOYMENT_NAME}
-      namespace: ${NAMESPACE}
-      path: "/validate"
-    caBundle: ${CA_BUNDLE}
-  rules:
-  - operations: ["CREATE", "UPDATE"]
-    apiGroups: [""]
-    apiVersions: ["*"]
-    resources: ["pods"]
-  failurePolicy: Fail
-  # don't run on kube-system
-  namespaceSelector:
-    matchExpressions:
-      - key: Name
-        operator: NotIn
-        values: ["kube-system"]
+#apiVersion: admissionregistration.k8s.io/v1beta1
+#kind: ValidatingWebhookConfiguration
+#metadata:
+#  name: ${DEPLOYMENT_NAME}
+#webhooks:
+#- name: k8s-gmsa-admission-webhook.wk8.github.com
+#  clientConfig:
+#    service:
+#      name: ${DEPLOYMENT_NAME}
+#      namespace: ${NAMESPACE}
+#      path: "/validate"
+#    caBundle: ${CA_BUNDLE}
+#  rules:
+#  - operations: ["CREATE", "UPDATE"]
+#    apiGroups: [""]
+#    apiVersions: ["*"]
+#    resources: ["pods"]
+#  failurePolicy: Fail
+#  # don't run on kube-system
+#  namespaceSelector:
+#    matchExpressions:
+#      - key: Name
+#        operator: NotIn
+#        values: ["kube-system"]
