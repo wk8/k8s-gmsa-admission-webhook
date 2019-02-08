@@ -1,0 +1,2 @@
+package: github.com/wk8/k8s-gmsa-admission-webhook
+import: []

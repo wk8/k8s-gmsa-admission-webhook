@@ -1,0 +1,36 @@
+## Dockerfile for dev
+## Differs from the release Dockerfile in that it allows re-compiling and re-starting
+## the webserver from within the container
+
+ARG GO_VERSION
+FROM golang:$GO_VERSION
+
+# we use runit so that we can stop the service without killing the container, and consequently
+# play around it
+RUN apt-get update && apt-get install --yes runit
+RUN /bin/bash -c "echo -e '"'#!/bin/bash\nset -eu\nrunsvdir -P /etc/service\n'"' > /tmp/runit_2"
+# And this is uglier still. See https://github.com/moby/moby/issues/29922
+RUN chmod +x /tmp/runit_2 && mkdir -p /etc/runit && mv /tmp/runit_2 /etc/runit/2
+# same idea for the run script and the log run script
+RUN /bin/bash -c "echo -e '"'#!/bin/bash\nexec /go/src/github.com/wk8/k8s-gmsa-admission-webhook/k8s-gmsa-admission-webhook 2>&1\n'"' > /tmp/runit_run"
+RUN /bin/bash -c "echo -e '"'#!/bin/bash\nwhile read line; do echo $line; done\n'"' > /tmp/runit_log_run"
+RUN mkdir -p /etc/service/webhook/log \
+    && chmod +x /tmp/runit_run && mv /tmp/runit_run /etc/service/webhook/run \
+    && chmod +x /tmp/runit_log_run && mv /tmp/runit_log_run /etc/service/webhook/log/run \
+    && ln -s /usr/bin/sv /etc/init.d/webhook
+
+WORKDIR /go/src/github.com/wk8/k8s-gmsa-admission-webhook
+
+# install go dependencies
+RUN curl https://glide.sh/get | sh
+COPY glide.* ./
+RUN glide install -v
+
+# build
+COPY *.go ./
+RUN go build
+
+# copy the rest
+COPY . .
+
+CMD ["runsvdir", "/etc/service"]
