@@ -59,8 +59,8 @@ clean_cluster: clean_ssl stop_cluster
 	rm -rf $(KUBEADM_DIND_DIR)
 
 # starts the DIND cluster only if it's not already running
-.PHONY: start_cluster_if_not_running
-start_cluster_if_not_running: $(KUBEADM_DIND_CLUSTER_SCRIPT)
+.PHONY: _start_cluster_if_not_running
+_start_cluster_if_not_running: $(KUBEADM_DIND_CLUSTER_SCRIPT)
 	@ if [ -x $(KUBECTL) ] && timeout 2 $(KUBECTL) version &> /dev/null; then \
 		echo "Dev cluster already running"; \
 	else \
@@ -86,7 +86,7 @@ _deploy_webhook: _copy_image_if_needed $(TLS_DIR)/server-key.pem $(TLS_DIR)/serv
 
 # copies the image to the DIND cluster only if it's not already up-to-date
 .PHONY: _copy_image_if_needed
-_copy_image_if_needed: start_cluster_if_not_running
+_copy_image_if_needed: _start_cluster_if_not_running
 	@ [ "$$K8S_GMSA_IMAGE" ]
 	@ LOCAL_IMG_ID=$$(docker image inspect "$$K8S_GMSA_IMAGE" -f '{{ .Id }}'); \
 	STATUS=$$? ; if [[ $$STATUS != 0 ]]; then echo "Unable to retrieve image ID for $$K8S_GMSA_IMAGE"; exit $$STATUS; fi; \
@@ -128,6 +128,10 @@ $(KUBEADM_DIND_CLUSTER_SCRIPT):
 install_deps: $(GLIDE_BIN)
 	$(GLIDE_BIN) install -v
 
+.PHONY: update_deps
+update_deps: $(GLIDE_BIN)
+	$(GLIDE_BIN) update -v
+
 GLIDE_URL = https://glide.sh/get
 $(GLIDE_BIN):
 	mkdir -p $(dir $(GLIDE_BIN))
@@ -152,12 +156,13 @@ clean: clean_cluster clean_sync
 ## make build-cmd && cp bin/ksync $(which ksync)
 
 KSYNC = ksync --namespace $(NAMESPACE)
-KSYNC_DAEMON_PID_FILE = ~/.ksync/daemon.pid
+KSYNC_DIR = ~/.ksync
+KSYNC_DAEMON_PID_FILE = $(KSYNC_DIR)/daemon.pid
 KSYNC_NAME = k8s-gmsa-admission-webhook
 
 .PHONY: start_sync
 start_sync: _init_ksync_if_needed
-	@ if $(KSYNC) get $(DEPLOYMENT_NAME) | grep $(DEPLOYMENT_NAME) > /dev/null; then \
+	@ if $(KSYNC) get $(KSYNC_NAME) | grep $(KSYNC_NAME) > /dev/null; then \
 		echo "ksync already started"; \
 	else \
 		$(KSYNC) create --selector=app=$(DEPLOYMENT_NAME) $(CURDIR) /go/src/github.com/wk8/k8s-gmsa-admission-webhook --name $(KSYNC_NAME) --reload=false; \
@@ -165,11 +170,15 @@ start_sync: _init_ksync_if_needed
 
 .PHONY: stop_sync
 stop_sync:
-	@ if $(KSYNC) get $(DEPLOYMENT_NAME) | grep $(DEPLOYMENT_NAME) > /dev/null; then \
-		$(KSYNC) delete $(DEPLOYMENT_NAME); \
-	else \
-		echo "ksync not started"; \
+	@ if $(KSYNC) get $(KSYNC_NAME) | grep $(KSYNC_NAME) > /dev/null || grep $(KSYNC_NAME) $(KSYNC_DIR)/ksync.yaml &> /dev/null; then \
+		$(KSYNC) delete $(KSYNC_NAME); \
 	fi
+	@ rm -f $(KSYNC_DAEMON_PID_FILE)
+	@ if $(KUBECTLNS) get daemonset ksync &> /dev/null; then $(KUBECTLNS) delete daemonset ksync; fi
+	@ $(KUBECTLNS) delete pod --selector=app=ksync > /dev/null
+
+.PHONY: restart_sync
+restart_sync: stop_sync start_sync
 
 .PHONY: clean_sync
 clean_sync: stop_sync
