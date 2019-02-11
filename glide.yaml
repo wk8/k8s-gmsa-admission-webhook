@@ -1,2 +1,14 @@
 package: github.com/wk8/k8s-gmsa-admission-webhook
-import: []
+import:
+- package: k8s.io/api
+  version: kubernetes-1.13.3
+- package: k8s.io/apiextensions-apiserver
+  version: kubernetes-1.13.3
+- package: k8s.io/apimachinery
+  version: kubernetes-1.13.3
+- package: k8s.io/apiserver
+  version: kubernetes-1.13.3
+- package: k8s.io/client-go
+  version: kubernetes-1.13.3
+- package: k8s.io/kubernetes
+  version: v1.13.3

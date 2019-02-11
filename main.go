@@ -1,10 +1,13 @@
 package main
 
+// TODO wkpo clean up glide.lock ? rm -rf vendor glide.lock && make update_deps
+
 import (
 	"fmt"
 	"os"
 
 	"github.com/sirupsen/logrus"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -12,12 +15,12 @@ import (
 func main() {
 	initLogrus()
 
-	kubeClient, err := createKubeClient()
+	coreClient, dynamicClient, err := createKubeClients()
 	if err != nil {
 		panic(err)
 	}
 
-	webhook := newWebhook(&kubeClient)
+	webhook := newWebhook(coreClient, dynamicClient)
 
 	tlsConfig := &tlsConfig{
 		crtPath: env("TLS_CRT"),
@@ -35,16 +38,23 @@ func initLogrus() {
 	logrus.SetLevel(logrus.DebugLevel)
 }
 
-func createKubeClient() (kubeClient, error) {
+func createKubeClients() (kubernetes.Interface, dynamic.Interface, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	client, err := kubernetes.NewForConfig(config)
+
+	coreClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return client, nil
+
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return coreClient, dynamicClient, nil
 }
 
 func env(key string) string {

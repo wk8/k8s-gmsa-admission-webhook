@@ -68,7 +68,6 @@ spec:
 
 ---
 
-## TODO wkpo next mutating?
 apiVersion: admissionregistration.k8s.io/v1beta1
 kind: MutatingWebhookConfiguration
 metadata:
