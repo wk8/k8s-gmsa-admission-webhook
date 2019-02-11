@@ -228,16 +228,17 @@ func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod) (*admiss
 		}
 	}
 
-	patchesBytes, e := json.Marshal(patches)
-	if e != nil {
-		return nil, &podAdmissionError{error: fmt.Errorf("unable to marshall patch JSON %v: %v", patches, err), pod: pod, code: http.StatusInternalServerError}
-	}
+	admissionResponse := &admissionv1beta1.AdmissionResponse{Allowed: true}
 
-	patchType := admissionv1beta1.PatchTypeJSONPatch
-	admissionResponse := &admissionv1beta1.AdmissionResponse{
-		Allowed:   true,
-		Patch:     patchesBytes,
-		PatchType: &patchType,
+	if len(patches) != 0 {
+		patchesBytes, e := json.Marshal(patches)
+		if e != nil {
+			return nil, &podAdmissionError{error: fmt.Errorf("unable to marshall patch JSON %v: %v", patches, err), pod: pod, code: http.StatusInternalServerError}
+		}
+
+		admissionResponse.Patch = patchesBytes
+		patchType := admissionv1beta1.PatchTypeJSONPatch
+		admissionResponse.PatchType = &patchType
 	}
 
 	return admissionResponse, nil
