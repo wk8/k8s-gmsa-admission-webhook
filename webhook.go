@@ -10,26 +10,12 @@ import (
 
 	"github.com/sirupsen/logrus"
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/kubernetes/pkg/serviceaccount"
 )
 
 const (
-	// these 3 constants are the coordinates of the Custom Resource Definition
-	crdAPIGroup     = "windows.k8s.io"
-	crdAPIVersion   = "v1alpha1"
-	crdResourceName = "gmsacredentialspecs"
-
-	// crdContentsField is the single field that's expect to be defined in a GMSA CRD,
-	// and to contain the contents of the cred spec itself
-	crdContentsField = "credspec"
-
 	// gMSAContainerSpecContentsAnnotationKeySuffix is the suffix of the pod annotation where we store
 	// the contents of the GMSA credential spec for a given container (the full annotation being
 	// the container's name with this suffix appended).
@@ -47,15 +33,11 @@ const (
 	// credential spec for containers that do not have their own specific GMSA cred spec name
 	// set via a gMSAContainerSpecNameAnnotationKeySuffix annotation as explained above
 	gMSAPodSpecNameAnnotationKey = gMSAPodSpecContentsAnnotationKey + "-name"
-
-	// notFound is used in `isNotFoundError` below
-	notFound = "not found"
 )
 
 type webhook struct {
-	server        *http.Server
-	coreClient    kubernetes.Interface
-	dynamicClient dynamic.Interface
+	server *http.Server
+	client *kubeClient
 }
 
 type podAdmissionError struct {
@@ -64,11 +46,8 @@ type podAdmissionError struct {
 	pod  *corev1.Pod
 }
 
-func newWebhook(coreClient kubernetes.Interface, dynamicClient dynamic.Interface) *webhook {
-	return &webhook{
-		coreClient:    coreClient,
-		dynamicClient: dynamicClient,
-	}
+func newWebhook(client *kubeClient) *webhook {
+	return &webhook{client: client}
 }
 
 // start is a blocking call.
@@ -184,7 +163,7 @@ func (webhook *webhook) validateAndMutate(request *admissionv1beta1.AdmissionReq
 
 	switch request.Operation {
 	case admissionv1beta1.Create:
-		return webhook.validateAndMutateCreateRequest(pod)
+		return webhook.validateAndMutateCreateRequest(pod, request.Namespace)
 	case admissionv1beta1.Update:
 		oldPod, err := unmarshallPod(request.OldObject)
 		if err != nil {
@@ -208,23 +187,29 @@ func unmarshallPod(object runtime.RawExtension) (*corev1.Pod, *podAdmissionError
 
 // validateAndMutateCreateRequest makes sure that pods using GMSA's are created using ServiceAccounts
 // which are indeed authorized to use the requested GMSA's, and inlines them into the pod's spec as annotations.
-func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
+func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod, namespace string) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
 	var patches []map[string]string
 
-	patches, err := webhook.validateAndInlineSingleGMSASpec(pod, gMSAPodSpecNameAnnotationKey, gMSAPodSpecContentsAnnotationKey, patches)
+	patch, err := webhook.validateAndInlineSingleGMSASpec(pod, namespace, gMSAPodSpecNameAnnotationKey, gMSAPodSpecContentsAnnotationKey)
 	if err != nil {
 		return nil, err
 	}
+	if patch != nil {
+		patches = append(patches, patch)
+	}
 
 	for _, container := range pod.Spec.Containers {
-		patches, err = webhook.validateAndInlineSingleGMSASpec(
+		patch, err = webhook.validateAndInlineSingleGMSASpec(
 			pod,
+			namespace,
 			container.Name+gMSAContainerSpecNameAnnotationKeySuffix,
 			container.Name+gMSAContainerSpecContentsAnnotationKeySuffix,
-			patches,
 		)
 		if err != nil {
 			return nil, err
+		}
+		if patch != nil {
+			patches = append(patches, patch)
 		}
 	}
 
@@ -247,109 +232,41 @@ func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod) (*admiss
 // validateAndInlineSingleGMSASpec inlines the contents of the GMSA spec named by the nameKey annotation
 // into the contentsKey annotation, provided that it exists and that the service account associated to
 // the pod can `use` that GMSA spec.
-func (webhook *webhook) validateAndInlineSingleGMSASpec(pod *corev1.Pod, nameKey, contentsKey string, patches []map[string]string) ([]map[string]string, *podAdmissionError) {
+func (webhook *webhook) validateAndInlineSingleGMSASpec(pod *corev1.Pod, namespace string, nameKey, contentsKey string) (map[string]string, *podAdmissionError) {
 	// only this admission controller is allowed to populate the actual contents of the cred spec
 	if _, present := pod.Annotations[contentsKey]; present {
-		return patches, &podAdmissionError{error: fmt.Errorf("cannot pre-set a pod's gMSA content annotation (annotation %v present)", contentsKey), pod: pod, code: http.StatusForbidden}
+		return nil, &podAdmissionError{error: fmt.Errorf("cannot pre-set a pod's gMSA content annotation (annotation %v present)", contentsKey), pod: pod, code: http.StatusForbidden}
 	}
 
 	credSpecName, present := pod.Annotations[nameKey]
 	if !present || credSpecName == "" {
 		// nothing to do
-		return patches, nil
+		return nil, nil
 	}
 
 	// let's check that the associated service account can read the relevant cred spec CRD
-	if authorized, reason := webhook.isAuthorizedToReadCredSpec(pod, credSpecName); !authorized {
+	if authorized, reason := webhook.client.isAuthorizedToUseCredSpec(pod.Spec.ServiceAccountName, namespace, credSpecName); !authorized {
 		msg := fmt.Sprintf("the service account used for this pod does not have `use` access to the %s gMSA cred spec", credSpecName)
 		if reason != "" {
 			msg += fmt.Sprintf(", reason : %s", reason)
 		}
-		return patches, &podAdmissionError{error: fmt.Errorf(msg), pod: pod, code: http.StatusForbidden}
+		return nil, &podAdmissionError{error: fmt.Errorf(msg), pod: pod, code: http.StatusForbidden}
 	}
 
 	// finally inline the config map's contents into the spec
-	resource := schema.GroupVersionResource{
-		Group:    crdAPIGroup,
-		Version:  crdAPIVersion,
-		Resource: crdResourceName,
-	}
-	credSpec, err := webhook.dynamicClient.Resource(resource).Get(credSpecName, metav1.GetOptions{})
+	contents, code, err := webhook.client.retrieveCredSpecContents(credSpecName)
 	if err != nil {
-		admissionError := &podAdmissionError{pod: pod}
-
-		if isNotFoundError(err) {
-			admissionError.error = fmt.Errorf("cred spec %s does not exist", credSpecName)
-			admissionError.code = http.StatusNotFound
-		} else {
-			admissionError.error = fmt.Errorf("unable to retrieve the contents of cred spec %s: %v", credSpecName, err)
-			admissionError.code = http.StatusInternalServerError
-		}
-
-		return patches, admissionError
+		return nil, &podAdmissionError{error: err, pod: pod, code: code}
 	}
-
-	if contents, present := credSpec.Object[crdContentsField]; !present || contents == "" {
-		return patches, &podAdmissionError{error: fmt.Errorf("cred spec %s does not have a %s key", credSpecName, crdContentsField), pod: pod, code: http.StatusExpectationFailed}
-	}
-
-	contentsBytes, err := json.Marshal(credSpec.Object[crdContentsField])
-	if err != nil {
-		return patches, &podAdmissionError{error: fmt.Errorf("unable to marshall cred spec %s: %v", credSpecName, err), code: http.StatusInternalServerError}
-	}
-
-	patches = append(patches, map[string]string{
+	// worth noting that this JSON patch is guaranteed to work since we know at this point
+	// that the pod has annotations, and that it doesn't have that specific one
+	patch := map[string]string{
 		"op":    "add",
 		"path":  fmt.Sprintf("/metadata/annotations/%s", contentsKey),
-		"value": string(contentsBytes),
-	})
-
-	return patches, nil
-}
-
-// isAuthorizedToReadConfigMap checks that the pod's service account is authorized to `use` that cred spec.
-func (webhook *webhook) isAuthorizedToReadCredSpec(pod *corev1.Pod, credSpecName string) (bool, string) {
-	servceAccountUserInfo := serviceaccount.UserInfo(pod.Namespace, pod.Spec.ServiceAccountName, "")
-
-	// needed to cast `authorizationv1.ExtraValue` to `[]string`
-	var extra map[string]authorizationv1.ExtraValue
-	for k, v := range servceAccountUserInfo.GetExtra() {
-		extra[k] = v
+		"value": contents,
 	}
 
-	subjectAccessReview := authorizationv1.LocalSubjectAccessReview{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: pod.Namespace,
-		},
-		Spec: authorizationv1.SubjectAccessReviewSpec{
-			ResourceAttributes: &authorizationv1.ResourceAttributes{
-				Namespace: pod.Namespace,
-				Verb:      "use",
-				Group:     crdAPIGroup,
-				Version:   crdAPIVersion,
-				Resource:  crdResourceName,
-				Name:      credSpecName,
-			},
-			User:   servceAccountUserInfo.GetName(),
-			Groups: servceAccountUserInfo.GetGroups(),
-			UID:    servceAccountUserInfo.GetUID(),
-			Extra:  extra,
-		},
-	}
-
-	response, err := webhook.coreClient.AuthorizationV1().LocalSubjectAccessReviews(pod.Namespace).Create(&subjectAccessReview)
-	if err != nil {
-		return false, fmt.Sprintf("could not check authz access: %v", err.Error())
-	}
-	return response.Status.Allowed && !response.Status.Denied, response.Status.Reason
-}
-
-// isNotFoundError returns true if the error indicates "not found".  It parses
-// the error string looking for known values, which is imperfect but works in
-// practice; and there's not much better we can do right now with k8s' dynamic client API
-func isNotFoundError(err error) bool {
-	msg := err.Error()
-	return msg[len(msg)-len(notFound):] == notFound
+	return patch, nil
 }
 
 // validateUpdateRequest ensures that there are no updates to any of the GMSA annotations.
@@ -392,7 +309,7 @@ func deniedAdmissionResponse(err error, httpCode ...int) *admissionv1beta1.Admis
 	var code int
 	logMsg := "refusing to admit"
 
-	if admissionError, ok := err.(podAdmissionError); ok {
+	if admissionError, ok := err.(*podAdmissionError); ok {
 		code = admissionError.code
 		if admissionError.pod != nil {
 			logMsg += fmt.Sprintf(" pod %+v", admissionError.pod)

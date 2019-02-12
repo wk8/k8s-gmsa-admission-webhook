@@ -7,20 +7,18 @@ import (
 	"os"
 
 	"github.com/sirupsen/logrus"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
 func main() {
 	initLogrus()
 
-	coreClient, dynamicClient, err := createKubeClients()
+	kubeClient, err := createKubeClient()
 	if err != nil {
 		panic(err)
 	}
 
-	webhook := newWebhook(coreClient, dynamicClient)
+	webhook := newWebhook(kubeClient)
 
 	tlsConfig := &tlsConfig{
 		crtPath: env("TLS_CRT"),
@@ -38,23 +36,13 @@ func initLogrus() {
 	logrus.SetLevel(logrus.DebugLevel)
 }
 
-func createKubeClients() (kubernetes.Interface, dynamic.Interface, error) {
+func createKubeClient() (*kubeClient, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	coreClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	dynamicClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return coreClient, dynamicClient, nil
+	return newKubeClient(config)
 }
 
 func env(key string) string {
