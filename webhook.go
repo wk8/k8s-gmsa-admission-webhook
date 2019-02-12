@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
@@ -34,6 +35,10 @@ const (
 	// set via a gMSAContainerSpecNameAnnotationKeySuffix annotation as explained above
 	gMSAPodSpecNameAnnotationKey = gMSAPodSpecContentsAnnotationKey + "-name"
 )
+
+// jsonPatchEscapeReplacer complies with JSON Patch's way of escaping special characters
+// in key names. See https://tools.ietf.org/html/rfc6901#section-3
+var jsonPatchEscaper = strings.NewReplacer("~", "~0", "/", "~1")
 
 type webhook struct {
 	server *http.Server
@@ -262,7 +267,7 @@ func (webhook *webhook) validateAndInlineSingleGMSASpec(pod *corev1.Pod, namespa
 	// that the pod has annotations, and that it doesn't have that specific one
 	patch := map[string]string{
 		"op":    "add",
-		"path":  fmt.Sprintf("/metadata/annotations/%s", contentsKey),
+		"path":  fmt.Sprintf("/metadata/annotations/%s", jsonPatchEscaper.Replace(contentsKey)),
 		"value": contents,
 	}
 
