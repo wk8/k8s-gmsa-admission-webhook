@@ -68,6 +68,37 @@ spec:
 
 ---
 
+# add a label to the deployment's namespace so that we can exclude it
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    gmsa-webhook-disabled: po
+
+---
+
+# declare the CRD to be used
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: gmsacredentialspecs.windows.k8s.io
+spec:
+  group: windows.k8s.io
+  version: v1alpha1
+  names:
+    kind: GMSACredentialSpec
+    plural: gmsacredentialspecs
+  scope: Cluster
+  validation:
+    openAPIV3Schema:
+      properties:
+        credspec:
+          description: GMSA Credential Spec
+          type: object
+
+---
+
 apiVersion: admissionregistration.k8s.io/v1beta1
 kind: MutatingWebhookConfiguration
 metadata:
@@ -86,10 +117,8 @@ webhooks:
     apiVersions: ["*"]
     resources: ["pods"]
   failurePolicy: Fail
-  # TODO wkpo figure that out
-#  # don't run on kube-system
-#  namespaceSelector:
-#    matchExpressions:
-#      - key: Name
-#        operator: NotIn
-#        values: ["kube-system"]
+  # don't run on ${NAMESPACE}
+  namespaceSelector:
+    matchExpressions:
+      - key: gmsa-webhook-disabled
+        operator: DoesNotExist

@@ -1,4 +1,4 @@
-.DEFAULT_GOAL := wkpo # TODO wkpo
+.DEFAULT_GOAL := integration_tests
 SHELL := /bin/bash
 
 ### Overridable env vars ###
@@ -15,10 +15,6 @@ $(error "Kubernetes version $(KUBERNETES_VERSION) not supported")
 endif
 
 ifeq ($(GLIDE_BIN),)
-ifeq ($(GOPATH),)
-# TODO wkpo: shouldn't require this
-$(error '$$GOPATH not defined, cannot install glide')
-endif
 GLIDE_BIN = $(GOPATH)/bin/glide
 endif
 
@@ -35,6 +31,7 @@ KUBEADM_DIND_DIR = ~/.kubeadm-dind-cluster
 ADMISSION_PLUGINS = NodeRestriction,MutatingAdmissionWebhook,ValidatingAdmissionWebhook
 
 DEV_IMAGE_NAME = k8s-gmsa-webhook-dev
+IMAGE_NAME = k8s-gmsa-webhook
 DEPLOYMENT_NAME = k8s-gmsa-admission-webhook
 NAMESPACE = kube-system
 KUBECTL = $(KUBEADM_DIND_DIR)/kubectl
@@ -71,6 +68,11 @@ _start_cluster_if_not_running: $(KUBEADM_DIND_CLUSTER_SCRIPT)
 .PHONY: deploy_dev_webhook
 deploy_dev_webhook:
 	K8S_GMSA_IMAGE=$(DEV_IMAGE_NAME) $(MAKE) _deploy_webhook
+
+# deploys the webhook to the DIND cluster with the release image
+.PHONY: deploy_webhook
+deploy_webhook:
+	K8S_GMSA_IMAGE=$(IMAGE_NAME) $(MAKE) _deploy_webhook
 
 # deploys the webhook to the DIND cluster
 .PHONY: _deploy_webhook
@@ -134,6 +136,10 @@ update_deps: $(GLIDE_BIN)
 
 GLIDE_URL = https://glide.sh/get
 $(GLIDE_BIN):
+	@ if [ ! "$$GOPATH" ]; then \
+		echo "GOPATH env var not defined, cannot install glide"; \
+		exit 1; \
+	fi
 	mkdir -p $(dir $(GLIDE_BIN))
 	if which curl &> /dev/null; then \
 		curl $(GLIDE_URL) | sh; \
@@ -145,60 +151,24 @@ $(GLIDE_BIN):
 build_dev_image:
 	$(DOCKER_BUILD) -f Dockerfile.dev -t $(DEV_IMAGE_NAME)
 
+.PHONY: build_image
+build_image:
+	$(DOCKER_BUILD) -f Dockerfile -t $(IMAGE_NAME)
+
 .PHONY:
 clean: clean_cluster clean_sync
+	rm -rf integration_tests/tmp
 
+.PHONY: integration_tests
+integration_tests: remove_webhook build_image deploy_webhook run_integration_tests
 
-## Ksync (https://github.com/vapor-ware/ksync) is a pretty nice way to keep the dev container
-## in sync with the local repo
-## It won't work as is though... see https://github.com/vapor-ware/ksync/pull/264
-## If you want to use my fork in the meantime just clone https://github.com/wk8/ksync, and then
-## make build-cmd && cp bin/ksync $(which ksync)
+.PHONY: run_integration_tests
+run_integration_tests:
+	go test -v github.com/wk8/k8s-gmsa-admission-webhook/integration_tests "$$GO_TEST_FLAGS"
 
-KSYNC = ksync --namespace $(NAMESPACE)
-KSYNC_DIR = ~/.ksync
-KSYNC_DAEMON_PID_FILE = $(KSYNC_DIR)/daemon.pid
-KSYNC_NAME = k8s-gmsa-admission-webhook
+.PHONY: travis_build
+travis_build:
+	echo "Kubernetes version: $(KUBERNETES_VERSION)"
+	KUBECTL=$(KUBECTL) $(MAKE) integration_tests
 
-.PHONY: start_sync
-start_sync: _init_ksync_if_needed
-	@ if $(KSYNC) get $(KSYNC_NAME) | grep $(KSYNC_NAME) > /dev/null; then \
-		echo "ksync already started"; \
-	else \
-		$(KSYNC) create --selector=app=$(DEPLOYMENT_NAME) $(CURDIR) /go/src/github.com/wk8/k8s-gmsa-admission-webhook --name $(KSYNC_NAME) --reload=false; \
-	fi
-
-.PHONY: stop_sync
-stop_sync:
-	@ if $(KSYNC) get $(KSYNC_NAME) | grep $(KSYNC_NAME) > /dev/null || grep $(KSYNC_NAME) $(KSYNC_DIR)/ksync.yaml &> /dev/null; then \
-		$(KSYNC) delete $(KSYNC_NAME); \
-	fi
-	@ rm -f $(KSYNC_DAEMON_PID_FILE)
-	@ if $(KUBECTLNS) get daemonset ksync &> /dev/null; then $(KUBECTLNS) delete daemonset ksync; fi
-	@ $(KUBECTLNS) delete pod --selector=app=ksync > /dev/null
-
-.PHONY: restart_sync
-restart_sync: stop_sync start_sync
-
-.PHONY: clean_sync
-clean_sync: stop_sync
-	$(KSYNC) clean --nuke --local --remote
-
-.PHONY: _init_ksync_if_needed
-_init_ksync_if_needed: _install_ksync_if_needed
-	@ if ! kill -0 $$(cat $(KSYNC_DAEMON_PID_FILE) 2> /dev/null) &> /dev/null; then \
-		$(KSYNC) init --docker-root /dind/docker --docker-socket /run/docker.sock \
-			&& $(KSYNC) watch --daemon; \
-	fi
-
-KSYNC_URL = https://vapor-ware.github.io/gimme-that/gimme.sh
-.PHONY: _install_ksync_if_needed
-_install_ksync_if_needed:
-	@ if ! which ksync &> /dev/null; then \
-		echo "Installing ksync"; \
-		if which curl &> /dev/null; then \
-			curl $(KSYNC_URL) | sh; \
-		else \
-			wget -O - $(KSYNC_URL) 2> /dev/null | sh; \
-		fi ; \
-	fi
+include ksync.mk

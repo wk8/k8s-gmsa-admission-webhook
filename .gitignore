@@ -2,3 +2,4 @@
 /kubeadm_dind_scripts/
 /k8s-gmsa-admission-webhook
 /deploy/tls
+/integration_tests/tmp/

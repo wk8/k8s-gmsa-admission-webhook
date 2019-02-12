@@ -1,10 +1,9 @@
 package main
 
-// TODO wkpo clean up glide.lock ? rm -rf vendor glide.lock && make update_deps
-
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/rest"
@@ -30,10 +29,42 @@ func main() {
 	}
 }
 
+var logLevels = map[string]logrus.Level{
+	"panic": logrus.PanicLevel,
+	"fatal": logrus.FatalLevel,
+	"error": logrus.ErrorLevel,
+	"warn":  logrus.WarnLevel,
+	"info":  logrus.InfoLevel,
+	"debug": logrus.DebugLevel,
+	"trace": logrus.TraceLevel,
+}
+
 func initLogrus() {
 	logrus.SetOutput(os.Stdout)
-	// TODO wkpo higher log level for the release image, through env var
-	logrus.SetLevel(logrus.DebugLevel)
+
+	logLevel := logrus.DebugLevel
+	invalid := false
+
+	rawLogLevel, present := os.LookupEnv("LOG_LEVEL")
+	if present {
+		if level, valid := logLevels[strings.ToLower(rawLogLevel)]; valid {
+			logLevel = level
+		} else {
+			invalid = true
+		}
+	}
+
+	logrus.SetLevel(logLevel)
+
+	if invalid {
+		keys := make([]string, len(logLevels))
+		i := 0
+		for key := range logLevels {
+			keys[i] = key
+			i++
+		}
+		logrus.Warningf("Unknown log level %s, valid log levels are: %v", rawLogLevel, strings.Join(keys, ", "))
+	}
 }
 
 func createKubeClient() (*kubeClient, error) {

@@ -66,7 +66,7 @@ func (webhook *webhook) start(port int, tlsConfig *tlsConfig) error {
 		Handler: webhook,
 	}
 
-	logrus.Debugf("starting webhook server at port %v", port)
+	logrus.Infof("starting webhook server at port %v", port)
 	var err error
 	if tlsConfig == nil {
 		err = webhook.server.ListenAndServe()
@@ -76,7 +76,7 @@ func (webhook *webhook) start(port int, tlsConfig *tlsConfig) error {
 
 	if err != nil {
 		if err == http.ErrServerClosed {
-			logrus.Debugf("server closed")
+			logrus.Infof("server closed")
 		} else {
 			return err
 		}
@@ -245,7 +245,7 @@ func (webhook *webhook) validateAndInlineSingleGMSASpec(pod *corev1.Pod, namespa
 
 	// let's check that the associated service account can read the relevant cred spec CRD
 	if authorized, reason := webhook.client.isAuthorizedToUseCredSpec(pod.Spec.ServiceAccountName, namespace, credSpecName); !authorized {
-		msg := fmt.Sprintf("the service account used for this pod does not have `use` access to the %s gMSA cred spec", credSpecName)
+		msg := fmt.Sprintf("service account %s does not have `use` access to the %s gMSA cred spec", pod.Spec.ServiceAccountName, credSpecName)
 		if reason != "" {
 			msg += fmt.Sprintf(", reason : %s", reason)
 		}
