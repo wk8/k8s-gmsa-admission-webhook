@@ -195,25 +195,19 @@ func unmarshallPod(object runtime.RawExtension) (*corev1.Pod, *podAdmissionError
 func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod, namespace string) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
 	var patches []map[string]string
 
-	patch, err := webhook.validateAndInlineSingleGMSASpec(pod, namespace, gMSAPodSpecNameAnnotationKey, gMSAPodSpecContentsAnnotationKey)
-	if err != nil {
-		return nil, err
+	nameKeys := make([]string, len(pod.Spec.Containers)+1)
+	contentKeys := make([]string, len(pod.Spec.Containers)+1)
+	for i, container := range pod.Spec.Containers {
+		nameKeys[i] = container.Name + gMSAContainerSpecNameAnnotationKeySuffix
+		contentKeys[i] = container.Name + gMSAContainerSpecContentsAnnotationKeySuffix
 	}
-	if patch != nil {
-		patches = append(patches, patch)
-	}
+	nameKeys[len(pod.Spec.Containers)] = gMSAPodSpecNameAnnotationKey
+	contentKeys[len(pod.Spec.Containers)] = gMSAPodSpecContentsAnnotationKey
 
-	for _, container := range pod.Spec.Containers {
-		patch, err = webhook.validateAndInlineSingleGMSASpec(
-			pod,
-			namespace,
-			container.Name+gMSAContainerSpecNameAnnotationKeySuffix,
-			container.Name+gMSAContainerSpecContentsAnnotationKeySuffix,
-		)
-		if err != nil {
+	for i, nameKey := range nameKeys {
+		if patch, err := webhook.validateAndInlineSingleGMSASpec(pod, namespace, nameKey, contentKeys[i]); err != nil {
 			return nil, err
-		}
-		if patch != nil {
+		} else if patch != nil {
 			patches = append(patches, patch)
 		}
 	}
@@ -221,8 +215,8 @@ func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod, namespac
 	admissionResponse := &admissionv1beta1.AdmissionResponse{Allowed: true}
 
 	if len(patches) != 0 {
-		patchesBytes, e := json.Marshal(patches)
-		if e != nil {
+		patchesBytes, err := json.Marshal(patches)
+		if err != nil {
 			return nil, &podAdmissionError{error: fmt.Errorf("unable to marshall patch JSON %v: %v", patches, err), pod: pod, code: http.StatusInternalServerError}
 		}
 
