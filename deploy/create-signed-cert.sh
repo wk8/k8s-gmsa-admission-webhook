@@ -57,6 +57,15 @@ if [ ! -x "$(command -v openssl)" ]; then
     exit 1
 fi
 
+if [ ! "$KUBECTL" ]; then
+    $KUBECTL=$(which kubectl)
+fi
+
+if [ ! -x "$KUBECTL" ]; then
+    echo "kubectl not found"
+    exit 1
+fi
+
 csrName=${service}.${namespace}
 echo "creating certs in tmpdir ${tmpdir}"
 
@@ -80,10 +89,10 @@ openssl genrsa -out ${tmpdir}/server-key.pem 2048
 openssl req -new -key ${tmpdir}/server-key.pem -subj "/CN=${service}.${namespace}.svc" -out ${tmpdir}/server.csr -config ${tmpdir}/csr.conf
 
 # clean-up any previously created CSR for our service. Ignore errors if not present.
-kubectl delete csr ${csrName} 2>/dev/null || true
+$KUBECTL delete csr ${csrName} 2>/dev/null || true
 
 # create  server cert/key CSR and  send to k8s API
-cat <<EOF | kubectl create -f -
+cat <<EOF | $KUBECTL create -f -
 apiVersion: certificates.k8s.io/v1beta1
 kind: CertificateSigningRequest
 metadata:
@@ -100,17 +109,17 @@ EOF
 
 # verify CSR has been created
 while true; do
-    kubectl get csr ${csrName}
+    $KUBECTL get csr ${csrName}
     if [ "$?" -eq 0 ]; then
         break
     fi
 done
 
 # approve and fetch the signed certificate
-kubectl certificate approve ${csrName}
+$KUBECTL certificate approve ${csrName}
 # verify certificate has been signed
 for x in $(seq 10); do
-    serverCert=$(kubectl get csr ${csrName} -o jsonpath='{.status.certificate}')
+    serverCert=$($KUBECTL get csr ${csrName} -o jsonpath='{.status.certificate}')
     if [[ ${serverCert} != '' ]]; then
         break
     fi

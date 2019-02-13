@@ -43,6 +43,8 @@ TLS_DIR = deploy/tls
 .PHONY: start_cluster
 start_cluster: $(KUBEADM_DIND_CLUSTER_SCRIPT)
 	NUM_NODES=1 APISERVER_enable_admission_plugins=$(ADMISSION_PLUGINS) $(KUBEADM_DIND_CLUSTER_SCRIPT) up
+	@ echo "### Kubectl version: ###"
+	$(KUBECTL) version
 
 # stops the DIND cluster
 .PHONY: stop_cluster
@@ -102,7 +104,7 @@ _copy_image_if_needed: _start_cluster_if_not_running
 
 $(TLS_DIR)/%.pem:
 	@ mkdir -p $(TLS_DIR)
-	./deploy/create-signed-cert.sh --service $(DEPLOYMENT_NAME) --namespace $(NAMESPACE) --tmp-dir $(TLS_DIR)
+	KUBECTL=$(KUBECTL) ./deploy/create-signed-cert.sh --service $(DEPLOYMENT_NAME) --namespace $(NAMESPACE) --tmp-dir $(TLS_DIR)
 
 .PHONY: clean_ssl
 clean_ssl:
@@ -156,7 +158,7 @@ build_image:
 	$(DOCKER_BUILD) -f Dockerfile -t $(IMAGE_NAME)
 
 .PHONY:
-clean: clean_cluster clean_sync
+clean: clean_sync clean_cluster
 	rm -rf integration_tests/tmp
 
 .PHONY: integration_tests
@@ -164,11 +166,11 @@ integration_tests: remove_webhook build_image deploy_webhook run_integration_tes
 
 .PHONY: run_integration_tests
 run_integration_tests:
-	go test -v github.com/wk8/k8s-gmsa-admission-webhook/integration_tests "$$GO_TEST_FLAGS"
+	KUBECTL=$(KUBECTL) go test -count 1 -v github.com/wk8/k8s-gmsa-admission-webhook/integration_tests "$$GO_TEST_FLAGS"
 
 .PHONY: travis_build
 travis_build:
-	echo "Kubernetes version: $(KUBERNETES_VERSION)"
-	KUBECTL=$(KUBECTL) $(MAKE) integration_tests
+	@ echo "### Starting Travis build with Kubernetes version: $(KUBERNETES_VERSION) ###"
+	$(MAKE) integration_tests
 
 include ksync.mk

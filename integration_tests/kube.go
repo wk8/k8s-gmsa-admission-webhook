@@ -153,11 +153,11 @@ func deleteManifest(t *testing.T, path string) {
 }
 
 func runKubectlCommandOrFail(t *testing.T, args ...string) {
-	runCommandOrFail(t, "kubectl", args...)
+	runCommandOrFail(t, kubectl(), args...)
 }
 
 func runKubectlCommand(t *testing.T, args ...string) (success bool, stdout string, stderr string) {
-	return runCommand(t, "kubectl", args...)
+	return runCommand(t, kubectl(), args...)
 }
 
 func kubectl() (kubectl string) {

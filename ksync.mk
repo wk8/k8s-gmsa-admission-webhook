@@ -24,14 +24,14 @@ stop_sync:
 	fi
 	@ rm -f $(KSYNC_DAEMON_PID_FILE)
 	@ if $(KUBECTLNS) get daemonset ksync &> /dev/null; then $(KUBECTLNS) delete daemonset ksync; fi
-	@ $(KUBECTLNS) delete pod --selector=app=ksync > /dev/null
+	@ if [ -x $(KUBECTL) ]; then $(KUBECTLNS) delete pod --selector=app=ksync > /dev/null; fi
 
 .PHONY: restart_sync
 restart_sync: stop_sync start_sync
 
 .PHONY: clean_sync
 clean_sync: stop_sync
-	$(KSYNC) clean --nuke --local --remote
+	$(KSYNC) clean --nuke --local --remote || true
 
 .PHONY: _init_ksync_if_needed
 _init_ksync_if_needed: _install_ksync_if_needed
