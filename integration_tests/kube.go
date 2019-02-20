@@ -5,13 +5,14 @@ import (
 	"os"
 	"testing"
 
-	homedir "github.com/mitchellh/go-homedir"
+	"github.com/mitchellh/go-homedir"
 	"gotest.tools/poll"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/kubernetes/pkg/volume/util"
 )
 
 func kubeClient(t *testing.T) kubernetes.Interface {
@@ -124,11 +125,13 @@ func waitForKubeObject(t *testing.T, fetcher func(kubernetes.Interface, metav1.L
 	return
 }
 
+const testNamespacePrefix = "gmsa-webhook-test-"
+
 // createNamespace creates a new namespace, and fails the test if it already exists.
 // if passed an empty string, it picks a random name and returns it.
 func createNamespace(t *testing.T, name string) string {
 	if name == "" {
-		name = randomHexString(t)
+		name = testNamespacePrefix + randomHexString(t, util.ResourceNameLengthLimit-len(testNamespacePrefix))
 	}
 
 	runKubectlCommandOrFail(t, "create", "namespace", name)

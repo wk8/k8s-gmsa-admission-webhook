@@ -270,7 +270,7 @@ func integrationTestSetup(t *testing.T, name string, credSpecTemplates, template
 	tearDownFunc := func() {
 		// helps speed us test when working locally against a throw-away cluster
 		// deleting namespaces seems to be a rather heavy operation
-		if _, present := os.LookupEnv("K8S_ADMISSION_WEBHOOK_INTEGRATION_SKIP_CLEANUP"); present {
+		if _, present := os.LookupEnv("K8S_GMSA_ADMISSION_WEBHOOK_INTEGRATION_TEST_SKIP_CLEANUP"); present {
 			return
 		}
 

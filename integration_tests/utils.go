@@ -53,11 +53,8 @@ func runCommand(t *testing.T, name string, args ...string) (success bool, stdout
 	return success, string(stdoutBytes), string(stderrBytes)
 }
 
-func randomHexString(t *testing.T, bytes ...int) string {
-	b := 30
-	if len(bytes) != 0 {
-		b = bytes[0]
-	}
+func randomHexString(t *testing.T, length int) string {
+	b := length / 2
 	randBytes := make([]byte, b)
 
 	if n, err := rand.Reader.Read(randBytes); err != nil || n != b {

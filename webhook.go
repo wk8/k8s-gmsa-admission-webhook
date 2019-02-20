@@ -42,8 +42,15 @@ var jsonPatchEscaper = strings.NewReplacer("~", "~0", "/", "~1")
 
 type webhook struct {
 	server *http.Server
-	client *kubeClient
+	client kubeClientInterface
 }
+
+type webhookOperation string
+
+const (
+	validate webhookOperation = "VALIDATE"
+	mutate   webhookOperation = "MUTATE"
+)
 
 type podAdmissionError struct {
 	error
@@ -51,7 +58,7 @@ type podAdmissionError struct {
 	pod  *corev1.Pod
 }
 
-func newWebhook(client *kubeClient) *webhook {
+func newWebhook(client kubeClientInterface) *webhook {
 	return &webhook{client: client}
 }
 
@@ -85,7 +92,7 @@ func (webhook *webhook) start(port int, tlsConfig *tlsConfig) error {
 	return nil
 }
 
-// stop stops the HTTP server
+// stop stops the HTTP server.
 func (webhook *webhook) stop() error {
 	if webhook.server == nil {
 		return fmt.Errorf("webhook server not started yet")
@@ -93,16 +100,21 @@ func (webhook *webhook) stop() error {
 	return webhook.server.Shutdown(context.Background())
 }
 
-// ServeHTTP makes this object a http.Handler
+// ServeHTTP makes this object a http.Handler.
+// Since we only have a couple of endpoints, there's no need for a full-fleged router here.
 func (webhook *webhook) ServeHTTP(responseWriter http.ResponseWriter, request *http.Request) {
-	// only one endpoint, no need for a router here
-	if request.URL.Path != "/validate-mutate" {
-		logrus.Infof("received request for unknown path %s", request.URL.Path)
+	var admissionResponse *admissionv1beta1.AdmissionResponse
+
+	switch request.URL.Path {
+	case "/validate":
+		admissionResponse = webhook.httpRequestToAdmissionResponse(request, validate)
+	case "/mutate":
+		admissionResponse = webhook.httpRequestToAdmissionResponse(request, mutate)
+	default:
+		logrus.Infof("received POST request for unknown path %s", request.URL.Path)
 		responseWriter.WriteHeader(http.StatusNotFound)
 		return
 	}
-
-	admissionResponse := webhook.httpRequestToAdmissionResponse(request)
 
 	responseAdmissionReview := admissionv1beta1.AdmissionReview{Response: admissionResponse}
 	if responseBytes, err := json.Marshal(responseAdmissionReview); err == nil {
@@ -117,7 +129,11 @@ func (webhook *webhook) ServeHTTP(responseWriter http.ResponseWriter, request *h
 }
 
 // httpRequestToAdmissionResponse turns a raw HTTP request into an AdmissionResponse struct.
-func (webhook *webhook) httpRequestToAdmissionResponse(request *http.Request) *admissionv1beta1.AdmissionResponse {
+func (webhook *webhook) httpRequestToAdmissionResponse(request *http.Request, operation webhookOperation) *admissionv1beta1.AdmissionResponse {
+	// should be a POST request
+	if strings.ToUpper(request.Method) != "POST" {
+		return deniedAdmissionResponse(fmt.Errorf("expected POST HTTP request"), http.StatusMethodNotAllowed)
+	}
 	// verify the content type is accurate
 	contentType := request.Header.Get("Content-Type")
 	if contentType != "application/json" {
@@ -133,7 +149,7 @@ func (webhook *webhook) httpRequestToAdmissionResponse(request *http.Request) *a
 		return deniedAdmissionResponse(fmt.Errorf("couldn't read request body: %v", err), http.StatusBadRequest)
 	}
 
-	logrus.Debugf("handling request: %s", body)
+	logrus.Debugf("handling %s request: %s", operation, body)
 
 	// unmarshall the request
 	admissionReview := admissionv1beta1.AdmissionReview{}
@@ -144,7 +160,7 @@ func (webhook *webhook) httpRequestToAdmissionResponse(request *http.Request) *a
 		return deniedAdmissionResponse(fmt.Errorf("no 'Request' field in JSON body"), http.StatusBadRequest)
 	}
 
-	admissionResponse, admissionError := webhook.validateAndMutate(admissionReview.Request)
+	admissionResponse, admissionError := webhook.validateOrMutate(admissionReview.Request, operation)
 	if admissionError != nil {
 		admissionResponse = deniedAdmissionResponse(admissionError)
 	}
@@ -155,8 +171,8 @@ func (webhook *webhook) httpRequestToAdmissionResponse(request *http.Request) *a
 	return admissionResponse
 }
 
-// validateAndMutate is where the non-HTTP-related work happens.
-func (webhook *webhook) validateAndMutate(request *admissionv1beta1.AdmissionRequest) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
+// validateOrMutate is where the non-HTTP-related work happens.
+func (webhook *webhook) validateOrMutate(request *admissionv1beta1.AdmissionRequest, operation webhookOperation) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
 	if request.Kind.Kind != "Pod" {
 		return nil, &podAdmissionError{error: fmt.Errorf("expected a pod object, got a %v", request.Kind.Kind), code: http.StatusBadRequest}
 	}
@@ -168,13 +184,27 @@ func (webhook *webhook) validateAndMutate(request *admissionv1beta1.AdmissionReq
 
 	switch request.Operation {
 	case admissionv1beta1.Create:
-		return webhook.validateAndMutateCreateRequest(pod, request.Namespace)
-	case admissionv1beta1.Update:
-		oldPod, err := unmarshallPod(request.OldObject)
-		if err != nil {
-			return nil, err
+		switch operation {
+		case validate:
+			return webhook.validateCreateRequest(pod, request.Namespace)
+		case mutate:
+			return webhook.mutateCreateRequest(pod)
+		default:
+			// shouldn't happen, but needed so that all paths in the function have a return value
+			panic(fmt.Errorf("unexpected webhook operation: %v", operation))
 		}
-		return validateUpdateRequest(pod, oldPod)
+
+	case admissionv1beta1.Update:
+		if operation == validate {
+			oldPod, err := unmarshallPod(request.OldObject)
+			if err != nil {
+				return nil, err
+			}
+			return validateUpdateRequest(pod, oldPod)
+		}
+
+		// we only do validation on updates, no mutation
+		return &admissionv1beta1.AdmissionResponse{Allowed: true}, nil
 	default:
 		return nil, &podAdmissionError{error: fmt.Errorf("unpexpected operation %s", request.Operation), pod: pod, code: http.StatusBadRequest}
 	}
@@ -190,26 +220,81 @@ func unmarshallPod(object runtime.RawExtension) (*corev1.Pod, *podAdmissionError
 	return pod, nil
 }
 
-// validateAndMutateCreateRequest makes sure that pods using GMSA's are created using ServiceAccounts
-// which are indeed authorized to use the requested GMSA's, and inlines them into the pod's spec as annotations.
-func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod, namespace string) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
-	var patches []map[string]string
+// validateCreateRequest ensures that the only GMSA content annotations set on the pod,
+// match the corresponding GMSA name annotations, and that the pod's service account
+// is authorized to `use` the requested GMSA's.
+func (webhook *webhook) validateCreateRequest(pod *corev1.Pod, namespace string) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
+	var err *podAdmissionError
 
-	nameKeys := make([]string, len(pod.Spec.Containers)+1)
-	contentKeys := make([]string, len(pod.Spec.Containers)+1)
-	for i, container := range pod.Spec.Containers {
-		nameKeys[i] = container.Name + gMSAContainerSpecNameAnnotationKeySuffix
-		contentKeys[i] = container.Name + gMSAContainerSpecContentsAnnotationKeySuffix
-	}
-	nameKeys[len(pod.Spec.Containers)] = gMSAPodSpecNameAnnotationKey
-	contentKeys[len(pod.Spec.Containers)] = gMSAPodSpecContentsAnnotationKey
-
-	for i, nameKey := range nameKeys {
-		if patch, err := webhook.validateAndInlineSingleGMSASpec(pod, namespace, nameKey, contentKeys[i]); err != nil {
-			return nil, err
-		} else if patch != nil {
-			patches = append(patches, patch)
+	iterateOverGMSAAnnotationPairs(pod, func(nameKey, contentsKey string) {
+		if err != nil {
+			return
 		}
+
+		if credSpecName, present := pod.Annotations[nameKey]; present && credSpecName != "" {
+			// let's check that the associated service account can read the relevant cred spec CRD
+			if authorized, reason := webhook.client.isAuthorizedToUseCredSpec(pod.Spec.ServiceAccountName, namespace, credSpecName); !authorized {
+				msg := fmt.Sprintf("service account %s does not have `use` access to the %s gMSA cred spec", pod.Spec.ServiceAccountName, credSpecName)
+				if reason != "" {
+					msg += fmt.Sprintf(", reason : %s", reason)
+				}
+				err = &podAdmissionError{error: fmt.Errorf(msg), pod: pod, code: http.StatusForbidden}
+				return
+			}
+
+			// and the content annotation should contain the expected cred spec
+			if credSpecContents, present := pod.Annotations[contentsKey]; present {
+				if expectedContents, code, retrieveErr := webhook.client.retrieveCredSpecContents(credSpecName); retrieveErr != nil {
+					err = &podAdmissionError{error: retrieveErr, pod: pod, code: code}
+				} else if credSpecContents != expectedContents {
+					err = &podAdmissionError{error: fmt.Errorf("cred spec contained in annotation %s does not match the contents of GMSA %s", contentsKey, credSpecName), pod: pod, code: http.StatusForbidden}
+				}
+			}
+
+		} else if _, present := pod.Annotations[contentsKey]; present {
+			// the name annotation is not present, but the content one is
+			err = &podAdmissionError{error: fmt.Errorf("cannot pre-set a pod's gMSA content annotation (annotation %v present)", contentsKey), pod: pod, code: http.StatusForbidden}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &admissionv1beta1.AdmissionResponse{Allowed: true}, nil
+}
+
+// mutateCreateRequest inlines the requested GMSA's into the pod's spec as annotations.
+func (webhook *webhook) mutateCreateRequest(pod *corev1.Pod) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
+	var (
+		patches []map[string]string
+		err     *podAdmissionError
+	)
+
+	iterateOverGMSAAnnotationPairs(pod, func(nameKey, contentsKey string) {
+		if err != nil {
+			return
+		}
+
+		if _, present := pod.Annotations[contentsKey]; present {
+			// only this admission controller is allowed to populate the actual contents of the cred spec
+			// and "/mutate" is called before "/validate"
+			err = &podAdmissionError{error: fmt.Errorf("cannot pre-set a pod's gMSA content annotation (annotation %v present)", contentsKey), pod: pod, code: http.StatusForbidden}
+		} else if credSpecName, present := pod.Annotations[nameKey]; present && credSpecName != "" {
+			if contents, code, retrieveErr := webhook.client.retrieveCredSpecContents(credSpecName); retrieveErr != nil {
+				err = &podAdmissionError{error: retrieveErr, pod: pod, code: code}
+			} else {
+				// worth noting that this JSON patch is guaranteed to work since we know at this point
+				// that the pod has annotations, and and that it doesn't have this specific one
+				patches = append(patches, map[string]string{
+					"op":    "add",
+					"path":  fmt.Sprintf("/metadata/annotations/%s", jsonPatchEscaper.Replace(contentsKey)),
+					"value": contents,
+				})
+			}
+		}
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	admissionResponse := &admissionv1beta1.AdmissionResponse{Allowed: true}
@@ -228,63 +313,22 @@ func (webhook *webhook) validateAndMutateCreateRequest(pod *corev1.Pod, namespac
 	return admissionResponse, nil
 }
 
-// validateAndInlineSingleGMSASpec inlines the contents of the GMSA spec named by the nameKey annotation
-// into the contentsKey annotation, provided that it exists and that the service account associated to
-// the pod can `use` that GMSA spec.
-func (webhook *webhook) validateAndInlineSingleGMSASpec(pod *corev1.Pod, namespace string, nameKey, contentsKey string) (map[string]string, *podAdmissionError) {
-	// only this admission controller is allowed to populate the actual contents of the cred spec
-	if _, present := pod.Annotations[contentsKey]; present {
-		return nil, &podAdmissionError{error: fmt.Errorf("cannot pre-set a pod's gMSA content annotation (annotation %v present)", contentsKey), pod: pod, code: http.StatusForbidden}
-	}
-
-	credSpecName, present := pod.Annotations[nameKey]
-	if !present || credSpecName == "" {
-		// nothing to do
-		return nil, nil
-	}
-
-	// let's check that the associated service account can read the relevant cred spec CRD
-	if authorized, reason := webhook.client.isAuthorizedToUseCredSpec(pod.Spec.ServiceAccountName, namespace, credSpecName); !authorized {
-		msg := fmt.Sprintf("service account %s does not have `use` access to the %s gMSA cred spec", pod.Spec.ServiceAccountName, credSpecName)
-		if reason != "" {
-			msg += fmt.Sprintf(", reason : %s", reason)
-		}
-		return nil, &podAdmissionError{error: fmt.Errorf(msg), pod: pod, code: http.StatusForbidden}
-	}
-
-	// finally inline the config map's contents into the spec
-	contents, code, err := webhook.client.retrieveCredSpecContents(credSpecName)
-	if err != nil {
-		return nil, &podAdmissionError{error: err, pod: pod, code: code}
-	}
-	// worth noting that this JSON patch is guaranteed to work since we know at this point
-	// that the pod has annotations, and that it doesn't have that specific one
-	patch := map[string]string{
-		"op":    "add",
-		"path":  fmt.Sprintf("/metadata/annotations/%s", jsonPatchEscaper.Replace(contentsKey)),
-		"value": contents,
-	}
-
-	return patch, nil
-}
-
 // validateUpdateRequest ensures that there are no updates to any of the GMSA annotations.
 func validateUpdateRequest(pod, oldPod *corev1.Pod) (*admissionv1beta1.AdmissionResponse, *podAdmissionError) {
-	errors := make([]*podAdmissionError, 0)
-	errors = append(errors,
-		assertAnnotationsUnchanged(pod, oldPod, gMSAPodSpecNameAnnotationKey),
-		assertAnnotationsUnchanged(pod, oldPod, gMSAPodSpecContentsAnnotationKey))
+	var err *podAdmissionError
 
-	for _, container := range pod.Spec.Containers {
-		errors = append(errors,
-			assertAnnotationsUnchanged(pod, oldPod, container.Name+gMSAContainerSpecNameAnnotationKeySuffix),
-			assertAnnotationsUnchanged(pod, oldPod, container.Name+gMSAContainerSpecContentsAnnotationKeySuffix))
-	}
-
-	for _, err := range errors {
+	iterateOverGMSAAnnotationPairs(pod, func(nameKey, contentsKey string) {
 		if err != nil {
-			return nil, err
+			return
 		}
+		if nameKeyErr := assertAnnotationsUnchanged(pod, oldPod, nameKey); nameKeyErr != nil {
+			err = nameKeyErr
+		} else if contentsKeyErr := assertAnnotationsUnchanged(pod, oldPod, contentsKey); contentsKeyErr != nil {
+			err = contentsKeyErr
+		}
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return &admissionv1beta1.AdmissionResponse{Allowed: true}, nil
@@ -300,6 +344,15 @@ func assertAnnotationsUnchanged(pod, oldPod *corev1.Pod, key string) *podAdmissi
 		}
 	}
 	return nil
+}
+
+// iterateOverGMSAAnnotationPairs calls `f` on the successive pairs of GMSA name and contents
+// annotation keys.
+func iterateOverGMSAAnnotationPairs(pod *corev1.Pod, f func(nameKey, contentsKey string)) {
+	f(gMSAPodSpecNameAnnotationKey, gMSAPodSpecContentsAnnotationKey)
+	for _, container := range pod.Spec.Containers {
+		f(container.Name+gMSAContainerSpecNameAnnotationKeySuffix, container.Name+gMSAContainerSpecContentsAnnotationKeySuffix)
+	}
 }
 
 // deniedAdmissionResponse is a helper function to create an AdmissionResponse
@@ -323,7 +376,7 @@ func deniedAdmissionResponse(err error, httpCode ...int) *admissionv1beta1.Admis
 		logMsg += fmt.Sprintf(" with code %v", code)
 	}
 
-	logrus.Infof(logMsg+": %v", err.Error())
+	logrus.Infof("%s: %v", logMsg, err)
 
 	return &admissionv1beta1.AdmissionResponse{
 		Allowed: false,

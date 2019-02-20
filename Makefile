@@ -113,6 +113,7 @@ clean_ssl:
 # removes the webhook from the cluster
 .PHONY: remove_webhook
 remove_webhook:
+	@ if $(KUBECTLNS) get mutatingwebhookconfigurations $(DEPLOYMENT_NAME) &> /dev/null; then $(KUBECTLNS) delete mutatingwebhookconfigurations $(DEPLOYMENT_NAME); fi
 	@ if $(KUBECTLNS) get validatingwebhookconfigurations $(DEPLOYMENT_NAME) &> /dev/null; then $(KUBECTLNS) delete validatingwebhookconfigurations $(DEPLOYMENT_NAME); fi
 	@ if $(KUBECTLNS) get service $(DEPLOYMENT_NAME) &> /dev/null; then $(KUBECTLNS) delete service $(DEPLOYMENT_NAME); fi
 	@ if $(KUBECTLNS) get deployment $(DEPLOYMENT_NAME) &> /dev/null; then $(KUBECTLNS) delete deployment $(DEPLOYMENT_NAME); fi

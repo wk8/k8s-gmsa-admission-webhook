@@ -74,7 +74,7 @@ kind: Namespace
 metadata:
   name: ${NAMESPACE}
   labels:
-    gmsa-webhook-disabled: po
+    gmsa-webhook: disabled
 
 ---
 
@@ -100,7 +100,7 @@ spec:
 ---
 
 apiVersion: admissionregistration.k8s.io/v1beta1
-kind: MutatingWebhookConfiguration
+kind: ValidatingWebhookConfiguration
 metadata:
   name: ${DEPLOYMENT_NAME}
 webhooks:
@@ -109,7 +109,7 @@ webhooks:
     service:
       name: ${DEPLOYMENT_NAME}
       namespace: ${NAMESPACE}
-      path: "/validate-mutate"
+      path: "/validate"
     caBundle: ${CA_BUNDLE}
   rules:
   - operations: ["CREATE", "UPDATE"]
@@ -120,5 +120,33 @@ webhooks:
   # don't run on ${NAMESPACE}
   namespaceSelector:
     matchExpressions:
-      - key: gmsa-webhook-disabled
-        operator: DoesNotExist
+      - key: gmsa-webhook
+        operator: NotIn
+        values: [disabled]
+
+---
+
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: ${DEPLOYMENT_NAME}
+webhooks:
+- name: k8s-gmsa-admission-webhook.wk8.github.com
+  clientConfig:
+    service:
+      name: ${DEPLOYMENT_NAME}
+      namespace: ${NAMESPACE}
+      path: "/mutate"
+    caBundle: ${CA_BUNDLE}
+  rules:
+  - operations: ["CREATE"]
+    apiGroups: [""]
+    apiVersions: ["*"]
+    resources: ["pods"]
+  failurePolicy: Fail
+  # don't run on ${NAMESPACE}
+  namespaceSelector:
+    matchExpressions:
+    - key: gmsa-webhook
+      operator: NotIn
+      values: [disabled]
