@@ -58,7 +58,7 @@ if [ ! -x "$(command -v openssl)" ]; then
 fi
 
 if [ ! "$KUBECTL" ]; then
-    $KUBECTL=$(which kubectl)
+    KUBECTL=$(which kubectl)
 fi
 
 if [ ! -x "$KUBECTL" ]; then
