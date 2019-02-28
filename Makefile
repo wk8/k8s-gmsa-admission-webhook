@@ -86,7 +86,8 @@ _deploy_webhook: _copy_image_if_needed $(TLS_DIR)/server-key.pem $(TLS_DIR)/serv
 		DEPLOYMENT_NAME=$(DEPLOYMENT_NAME) \
 		IMAGE_NAME="$$K8S_GMSA_IMAGE" \
 		NAMESPACE=$(NAMESPACE) \
-			envsubst < deploy/gmsa-webhook.yml.tpl | $(KUBECTL) apply -f -
+			envsubst < deploy/gmsa-webhook.yml.tpl > deploy/gmsa-webhook.yml
+	$(KUBECTL) apply -f deploy/gmsa-webhook.yml
 
 # copies the image to the DIND cluster only if it's not already up-to-date
 .PHONY: _copy_image_if_needed

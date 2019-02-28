@@ -1,6 +1,16 @@
 ## Template to deploy the GMSA webhook
 ## TODO: make this a helmchart instead?
 
+# add a label to the deployment's namespace so that we can exclude it
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NAMESPACE}
+  labels:
+    gmsa-webhook: disabled
+
+---
+
 apiVersion: v1
 kind: Secret
 metadata:
@@ -9,6 +19,73 @@ metadata:
 data:
   tls_private_key: ${TLS_PRIVATE_KEY}
   tls_certificate: ${TLS_CERTIFICATE}
+
+---
+
+# the service account for the webhook
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${DEPLOYMENT_NAME}
+  namespace: ${NAMESPACE}
+
+---
+
+# create an RBAC role to allow reading GMSA cred specs
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: gmsa-cred-spec-reader
+rules:
+- apiGroups: ["windows.k8s.io"]
+  resources: ["gmsacredentialspecs"]
+  verbs: ["get"]
+
+---
+
+# and bind it to the webhook's service account
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: allow-gmsa-webhook-to-read-cred-specs
+  namespace: ${NAMESPACE}
+subjects:
+- kind: ServiceAccount
+  name: ${DEPLOYMENT_NAME}
+  namespace: ${NAMESPACE}
+roleRef:
+  kind: ClusterRole
+  name: gmsa-cred-spec-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+## create an RBAC role to allow creating access reviews (ie checking authz)
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: localsubjectaccessreview-creator
+rules:
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["localsubjectaccessreviews"]
+  verbs: ["create"]
+
+---
+
+# and bind it to the webhook's service account
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: allow-gmsa-webhook-to-create-localsubjectaccessreview
+  namespace: ${NAMESPACE}
+subjects:
+- kind: ServiceAccount
+  name: ${DEPLOYMENT_NAME}
+  namespace: ${NAMESPACE}
+roleRef:
+  kind: ClusterRole
+  name: localsubjectaccessreview-creator
+  apiGroup: rbac.authorization.k8s.io
 
 ---
 
@@ -27,6 +104,9 @@ spec:
       labels:
         app: ${DEPLOYMENT_NAME}
     spec:
+      serviceAccountName: ${DEPLOYMENT_NAME}
+      nodeSelector:
+        beta.kubernetes.io/os: linux
       containers:
       - name: ${DEPLOYMENT_NAME}
         image: ${IMAGE_NAME}
@@ -65,16 +145,6 @@ spec:
     targetPort: 443
   selector:
     app: ${DEPLOYMENT_NAME}
-
----
-
-# add a label to the deployment's namespace so that we can exclude it
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: ${NAMESPACE}
-  labels:
-    gmsa-webhook: disabled
 
 ---
 
